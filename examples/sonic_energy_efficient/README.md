@@ -18,9 +18,11 @@ At 3.0 m/s the residual finds a **Pareto improvement — faster AND more efficie
 
 ### Side-by-side comparison
 
-| 1.7 m/s | 3.0 m/s |
+![1.7 m/s baseline vs residual](https://github.com/user-attachments/assets/0fccf5af-3122-4a45-8f24-cdc7e1da9b36)
+![3.0 m/s baseline vs residual](https://github.com/user-attachments/assets/a22c8d1f-821b-475e-8087-a4a155126c92)
+
+| 1.7 m/s energy | 3.0 m/s energy |
 |---|---|
-| ![1.7 m/s baseline vs residual](https://github.com/user-attachments/assets/0fccf5af-3122-4a45-8f24-cdc7e1da9b36) | ![3.0 m/s baseline vs residual](https://github.com/user-attachments/assets/a22c8d1f-821b-475e-8087-a4a155126c92) |
 | ![](docs/results/1p7_v9/energy_comparison.png) | ![](docs/results/3p0_v9/energy_comparison.png) |
 
 ---

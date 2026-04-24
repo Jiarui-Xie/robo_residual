@@ -20,9 +20,11 @@ The first end-to-end example trains on top of NVIDIA's [SONIC](https://github.co
 | Energy reduction | **−22.5%** (422 W → 327 W) | **−19.8%** (734 W → 588 W) |
 | Velocity tracking error | −67% | −47% |
 
-| 1.7 m/s | 3.0 m/s |
+![1.7 m/s baseline vs residual](https://github.com/user-attachments/assets/0fccf5af-3122-4a45-8f24-cdc7e1da9b36)
+![3.0 m/s baseline vs residual](https://github.com/user-attachments/assets/a22c8d1f-821b-475e-8087-a4a155126c92)
+
+| 1.7 m/s energy | 3.0 m/s energy |
 |---|---|
-| ![1.7 m/s baseline vs residual](https://github.com/user-attachments/assets/0fccf5af-3122-4a45-8f24-cdc7e1da9b36) | ![3.0 m/s baseline vs residual](https://github.com/user-attachments/assets/a22c8d1f-821b-475e-8087-a4a155126c92) |
 | ![](examples/sonic_energy_efficient/docs/results/1p7_v9/energy_comparison.png) | ![](examples/sonic_energy_efficient/docs/results/3p0_v9/energy_comparison.png) |
 
 → **[Full example, quickstart, and adaptation guide](examples/sonic_energy_efficient/README.md)**
