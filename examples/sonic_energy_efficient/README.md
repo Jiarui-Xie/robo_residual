@@ -18,8 +18,9 @@ At 3.0 m/s the residual finds a **Pareto improvement — faster AND more efficie
 
 ### Side-by-side comparison
 
-![1.7 m/s baseline vs residual](https://github.com/user-attachments/assets/0fccf5af-3122-4a45-8f24-cdc7e1da9b36)
-![3.0 m/s baseline vs residual](https://github.com/user-attachments/assets/a22c8d1f-821b-475e-8087-a4a155126c92)
+https://github.com/user-attachments/assets/0fccf5af-3122-4a45-8f24-cdc7e1da9b36
+
+https://github.com/user-attachments/assets/a22c8d1f-821b-475e-8087-a4a155126c92
 
 | 1.7 m/s energy | 3.0 m/s energy |
 |---|---|
@@ -177,12 +178,11 @@ sonic_energy_efficient/
 
 ## Key training notes
 
-- **energy_penalty = −0.002**: carefully tuned. Larger values cause the policy to learn to stand still rather than walk efficiently.
-- **Dataset must match the bridge**: if you change `isaaclab_sonic_bridge.py`, re-record the dataset. Stale datasets produce `vx_mean ≈ 2.0` at cmd=3.0 (correct is ~2.7).
-- **Best checkpoint at iter ~1000**: divergence after ~1500 is expected — use `checkpoint_best.pt`.
-- **Never train two speeds in parallel**: will saturate GPU and hang the machine.
+- **Best checkpoint at iter ~1000**: training diverges after ~1500 iterations — always use `checkpoint_best.pt`, not the final checkpoint.
+- **Dataset must match the bridge**: re-record the reference dataset any time you change `isaaclab_sonic_bridge.py`. A stale dataset shows up as `vx_mean ≈ 2.0` at cmd=3.0 (correct is ~2.7).
+- **energy_penalty = −0.002**: increasing it to get faster energy reduction backfires — the policy learns to walk slowly instead. See TUTORIAL §7.
 
-See [`docs/TUTORIAL.md`](docs/TUTORIAL.md) §7 for full training pitfalls.
+See [`docs/TUTORIAL.md`](docs/TUTORIAL.md) for the full training guide and pitfalls.
 
 ---
 
