@@ -208,11 +208,17 @@ class ResidualActorCritic(nn.Module):
             base_action = self.base.forward(base_obs)
         delta = self.residual(actor_obs)
         delta = torch.clamp(delta, -self.max_residual_limits, self.max_residual_limits)
+        self._last_residual_delta = delta
         return base_action + delta
+
+    @property
+    def last_residual_delta(self) -> torch.Tensor | None:
+        """Most recently computed residual delta (clamped). For reward shaping."""
+        return getattr(self, "_last_residual_delta", None)
 
     def _get_std(self) -> torch.Tensor:
         if self._noise_std_type == "log":
-            return torch.exp(self.log_std)
+            return torch.exp(torch.clamp(self.log_std, max=-0.5))
         return self.std
 
     def _update_distribution(self, actor_obs: torch.Tensor) -> None:

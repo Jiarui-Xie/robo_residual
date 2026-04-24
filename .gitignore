@@ -1,7 +1,62 @@
+# Python build / caches
 __pycache__/
 *.pyc
+*.pyo
 *.egg-info/
 dist/
 build/
 .pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+*.egg
+
+# IDE / OS
+.vscode/
+.idea/
+.DS_Store
+*.swp
+*~
+
+# Model binaries (large; pinned by SHA, fetch via download_models.py)
 *.onnx
+*.engine
+*.trt
+
+# Robot USD assets (large; from Unitree/NVIDIA, not redistributable)
+*.usd
+.asset_hash
+# UrdfConverter auto-generated config (contains local absolute paths)
+models/g1_rubber_hand/config.yaml
+
+# Training artifacts — all runs/ ignored; reproducible from configs + seed
+runs/
+logs/
+wandb/
+outputs/
+*.pt
+*.pth
+*.ckpt
+
+# Datasets (multi-MB .npz, regenerable via generate_reference_dataset.py)
+*.npz
+
+# Videos / figures (products of eval scripts)
+*.mp4
+*.avi
+*.webm
+# ...except docs showcase videos
+!examples/**/docs/**/*.mp4
+
+# Raw simulator stdout captures
+*.log
+
+# User-local instruction files (not shared across machines)
+CLAUDE.md
+.claude/
+
+# Env
+.env
+.venv/
+venv/

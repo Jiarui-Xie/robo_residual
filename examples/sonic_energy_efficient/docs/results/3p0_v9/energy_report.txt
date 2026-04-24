@@ -1,0 +1,19 @@
+Energy Efficiency Comparison — SONIC baseline vs SONIC+Residual
+================================================================
+Method : MuJoCo sim2sim, direct joint measurement (|τ × ω|)
+Command: 3.0 m/s forward walking
+Duration: 15s per run (after 15s warmup)
+
+┌─────────────────────┬─────────────┬─────────────┐
+│                     │  Baseline   │  Residual   │
+├─────────────────────┼─────────────┼─────────────┤
+│ Mean power (W)      │      733.6  │      588.3  │
+│ Median power (W)    │      640.0  │      594.1  │
+│ Mean fwd vel (m/s)  │      2.179  │      2.541  │
+│ Cmd overshoot (m/s) │     -0.821  │     -0.459  │
+│ Mean height (m)     │      0.692  │      0.693  │
+└─────────────────────┴─────────────┴─────────────┘
+
+Energy reduction : 19.8%
+Residual training: ~1000 iterations, ~1880 fps
+Residual params  : 1,351,227 (MLP)
