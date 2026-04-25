@@ -240,6 +240,108 @@ actor_obs = adapter.get_actor_obs(obs)   # flat tensor
 critic_obs = adapter.get_critic_obs(obs) # flat tensor
 ```
 
+## Inference-Time Residual Routing
+
+After training multiple residuals for different objectives, load them all at inference time and switch between them dynamically — without re-fusing or re-training.
+
+```python
+from robo_residual import ResidualRouter, ResidualSlotConfig
+
+router = ResidualRouter(
+    base_onnx_path="base.onnx",
+    residual_configs=[
+        ResidualSlotConfig("energy.onnx",  limits_energy,  name="energy"),
+        ResidualSlotConfig("terrain.onnx", limits_terrain, name="terrain"),
+        ResidualSlotConfig("speed.onnx",   limits_speed,   name="speed"),
+    ],
+    switch_mode="hard",   # or "soft"
+    device="cuda",
+)
+
+# One inference step: base always runs once, active residual adds its delta
+action = router.step(obs)   # obs: (batch, obs_dim)
+
+# Switch modes (hard: immediate)
+router.switch("terrain")
+action = router.step(obs)
+```
+
+### Hard switching (exclusive)
+
+One residual is active at a time. `switch()` takes effect immediately on the next `step()`.
+
+```python
+router = ResidualRouter(..., switch_mode="hard")
+router.switch("energy")      # by name
+router.switch(2)             # by slot index
+print(router.active_mode)    # "speed"
+print(router.list_modes())   # ["energy", "terrain", "speed"]
+```
+
+### Soft switching (weighted blend)
+
+All residuals run every step; their clamped deltas are weighted and summed. Useful for smooth gait transitions or confidence-weighted terrain adaptation.
+
+```python
+router = ResidualRouter(..., switch_mode="soft", default_blend_steps=30)
+
+# Smooth transition to terrain mode over 30 steps
+router.switch("terrain", blend_steps=30)
+for _ in range(30):
+    action = router.step(obs)   # weights interpolate each step
+print(router.is_blending)       # False — transition complete
+
+# Drive weights directly (e.g. from a terrain classifier)
+router.set_weights(torch.tensor([0.0, terrain_confidence, 0.0]))
+```
+
+### Mixed observation dimensions
+
+Each residual sees `obs[:, :slot_num_obs]` automatically. Pass the widest obs the base needs; narrower residuals slice what they need without any extra configuration.
+
+```python
+router = ResidualRouter(
+    base_onnx_path="base.onnx",          # trained on 48-dim obs
+    residual_configs=[
+        ResidualSlotConfig("proprio_res.onnx", limits_a, name="proprio"),  # 48-dim
+        ResidualSlotConfig("terrain_res.onnx", limits_b, name="terrain"),  # 128-dim
+    ],
+)
+obs = torch.randn(batch, 128)   # pass the widest obs
+action = router.step(obs)       # base gets obs[:, :48], terrain residual gets all 128
+```
+
+### Per-slot observation normalisation
+
+If residuals were trained with running-mean normalisation, pass the saved stats per slot:
+
+```python
+ResidualSlotConfig(
+    "terrain.onnx", limits,
+    obs_mean=saved_mean,   # shape (num_obs,)
+    obs_std=saved_std,
+)
+```
+
+### LSTM / stateful base
+
+For LSTM bases, the router manages hidden states automatically across `step()` calls:
+
+```python
+router = ResidualRouter(
+    "lstm_base.onnx", residual_configs,
+    base_hidden_io_map={"h_out": "h_in", "c_out": "c_in"},  # inferred if omitted
+)
+# Reset between episodes (full or partial for vectorised envs)
+router.reset()
+router.reset(env_ids=torch.tensor([0, 3]))
+
+# Switch and clear LSTM history simultaneously
+router.switch("terrain", reset_base_hidden=True)
+```
+
+---
+
 ## Multi-Phase Training (Composable Residuals)
 
 Stack multiple residual phases, each targeting a different objective:
@@ -400,6 +502,40 @@ Drop-in replacement for rsl_rl's `ActorCritic`. Same interface as `ResidualActor
 | `actor_obs_normalization` | `bool` | Enable actor obs normalization |
 | `critic_obs_normalization` | `bool` | Enable critic obs normalization |
 
+### `ResidualRouter`
+
+| Constructor arg | Type | Default | Description |
+|----------------|------|---------|-------------|
+| `base_onnx_path` | `str \| Path` | — | Path to the base policy ONNX |
+| `residual_configs` | `list[ResidualSlotConfig]` | — | One config per residual mode |
+| `switch_mode` | `str` | `"hard"` | `"hard"` or `"soft"` |
+| `default_blend_steps` | `int` | `20` | Steps to blend over during soft `switch()` |
+| `base_hidden_io_map` | `dict[str,str] \| None` | `None` | LSTM: `{"h_out":"h_in", ...}` — inferred positionally if omitted |
+| `base_obs_mean / base_obs_std` | `Tensor \| None` | `None` | Obs normalisation for the base |
+| `device` | `str` | `"cpu"` | Device for tensor ops |
+
+| Method / Property | Description |
+|-------------------|-------------|
+| `step(obs, **base_extra_inputs)` | One inference step; returns action `(batch, num_actions)` |
+| `switch(mode, blend_steps, reset_base_hidden)` | Switch to a named or indexed mode |
+| `set_weights(tensor)` | Set blend weights directly (soft mode only) |
+| `reset(env_ids)` | Clear LSTM hidden states; `env_ids` for partial reset |
+| `active_mode` | Name of dominant mode |
+| `weights` | Current blend weights `(n,)` |
+| `is_blending` | True during soft transition |
+| `list_modes()` | All registered mode names |
+
+### `ResidualSlotConfig`
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `onnx_path` | `str \| Path` | — | Trained residual ONNX |
+| `limits` | `Tensor` | — | Per-joint clamp limits `(num_actions,)` |
+| `name` | `str` | `str(index)` | Mode name for `switch()` |
+| `obs_mean / obs_std` | `Tensor \| None` | `None` | Per-slot obs normalisation |
+| `obs_input` | `int \| str` | `0` | Which ONNX input is the obs |
+| `action_output` | `int \| str` | `0` | Which ONNX output is the action |
+
 ### `fuse_residual_to_onnx`
 
 ```python
@@ -426,18 +562,20 @@ robo_residual/
 │   ├── core/
 │   │   ├── onnx_base.py              # Load ONNX, make batch dynamic, run inference
 │   │   ├── residual_actor_critic.py   # ONNX base + PyTorch residual + critic
-│   │   ├── composable.py             # Multi-phase residual stacking
+│   │   ├── composable.py             # Multi-phase residual stacking (training)
 │   │   └── fuse_onnx.py              # ONNX graph surgery: merge base + residual
 │   ├── config/
 │   │   └── residual_config.py         # JointGroupConfig, ResidualConfig
 │   ├── adapters/
 │   │   ├── obs_adapter.py            # TensorDict obs_groups → flat tensors
 │   │   └── rsl_rl_wrapper.py         # rsl_rl-compatible ActorCritic wrapper
+│   ├── inference/
+│   │   └── residual_router.py        # ResidualRouter: 1 base + N residuals, hard/soft switch
 │   └── utils/
 │       ├── freeze.py                 # freeze_module / unfreeze_module
 │       ├── zero_init.py              # Zero-init residual output layer
 │       └── normalizer.py            # EmpiricalNormalization (Welford's)
-└── tests/                            # 68 tests, all run on GPU when available
+└── tests/                            # Tests for all modules, run on GPU when available
 ```
 
 ## Saving / Loading During Training
