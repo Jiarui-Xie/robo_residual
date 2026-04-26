@@ -6,8 +6,8 @@ Take any trained policy (ONNX), freeze it, learn a small clamped residual on top
 
 ```
 base.onnx (your trained policy)
-    + ResidualConfig (per-joint clamp limits)
-    → Train residual MLP via PPO
+    + ResidualConfig (per-joint clamp limits, residual architecture)
+    → Train residual (MLP / LSTM / GRU) via PPO
     → fused.onnx (single file, deploy to robot)
 ```
 
@@ -45,11 +45,12 @@ Dependencies: `torch`, `onnx`, `onnxruntime`.
 
 ### 1. Define your residual config
 
-Decide which joints get how much residual budget. Like LoRA rank — different body parts get different budgets.
+Decide which joints get how much residual budget and which network architecture to use.
 
 ```python
 from robo_residual import ResidualConfig, JointGroupConfig
 
+# Default: stateless MLP (fastest, easiest to deploy)
 config = ResidualConfig(
     joint_groups=[
         # Legs: small residual (preserve gait)
@@ -57,12 +58,36 @@ config = ResidualConfig(
         # Arms: larger residual (fix arm waggling)
         JointGroupConfig("arms", indices=list(range(12, 29)), max_residual=0.15),
     ],
-    residual_hidden_dims=[256, 128],   # residual MLP size
+    residual_hidden_dims=[256, 128],   # MLP hidden layer sizes
     residual_activation="elu",
     init_noise_std=0.1,                # exploration noise
     default_max_residual=0.1,          # for joints not in any group
 )
+
+# GRU: lighter recurrent residual (one hidden state h)
+config = ResidualConfig(
+    joint_groups=[...],
+    residual_type="gru",
+    residual_gru_hidden_dim=256,
+    residual_gru_num_layers=1,
+)
+
+# LSTM: recurrent residual (hidden state h + cell state c)
+config = ResidualConfig(
+    joint_groups=[...],
+    residual_type="lstm",
+    residual_lstm_hidden_dim=256,
+    residual_lstm_num_layers=1,
+)
 ```
+
+**Choosing an architecture:**
+
+| Architecture | Params | Deploy complexity | When to use |
+|---|---|---|---|
+| `"mlp"` (default) | fewest | simplest | Most tasks; no history needed |
+| `"gru"` | medium | +1 hidden state tensor | History helps; latency-sensitive |
+| `"lstm"` | most | +2 hidden state tensors (h, c) | Strongest temporal memory |
 
 ### 2. Create the residual actor-critic
 
@@ -99,6 +124,9 @@ for iteration in range(num_iterations):
     obs = env.get_observations()          # (num_envs, obs_dim)
     actions = policy.act(obs)             # sample from distribution
     next_obs, rewards, dones, infos = env.step(actions)
+
+    # For recurrent residuals (GRU/LSTM): reset hidden state on episode end
+    policy.reset(dones)
 
     # --- PPO update ---
     # These work exactly like rsl_rl's ActorCritic:
@@ -137,6 +165,23 @@ fuse_residual_to_onnx(
 ```
 
 The fused model computes `base(obs) + clamp(residual(obs), -limits, +limits)` in a single forward pass. The fusion uses **ONNX graph surgery** — it merges both ONNX graphs at the graph level, so it works with any base architecture (MLP, LSTM, CNN, multi-input). Deploy the output the same way you deploy any ONNX policy — `onnxruntime`, TensorRT, etc.
+
+**Recurrent residuals (GRU/LSTM):** the fused ONNX gains extra hidden-state I/O. Feed them back each step at inference:
+
+```python
+# GRU fused model: obs + h_in → action + h_out
+sess = ort.InferenceSession("fused_gru.onnx")
+h = np.zeros((num_layers, batch, hidden_dim), dtype=np.float32)
+for step in range(episode_len):
+    action, h = sess.run(None, {"obs": obs, "residual_h_in": h})
+
+# LSTM fused model: obs + h_in + c_in → action + h_out + c_out
+sess = ort.InferenceSession("fused_lstm.onnx")
+h = np.zeros((num_layers, batch, hidden_dim), dtype=np.float32)
+c = np.zeros((num_layers, batch, hidden_dim), dtype=np.float32)
+for step in range(episode_len):
+    action, h, c = sess.run(None, {"obs": obs, "residual_h_in": h, "residual_c_in": c})
+```
 
 ## Different Observations for Residual vs Base
 
@@ -455,13 +500,18 @@ outputs = base.forward_full(obs=obs, h_in=h, c_in=c)
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `joint_groups` | `list[JointGroupConfig]` | `[]` | Per-group clamp limits |
-| `residual_hidden_dims` | `list[int]` | `[256, 128]` | Residual MLP hidden layers |
-| `residual_activation` | `str` | `"elu"` | Activation function |
+| `residual_hidden_dims` | `list[int]` | `[256, 128]` | MLP hidden layer sizes (unused for GRU/LSTM) |
+| `residual_activation` | `str` | `"elu"` | Activation function (MLP only) |
 | `init_noise_std` | `float` | `0.1` | Initial exploration noise |
 | `noise_std_type` | `str` | `"log"` | `"log"` or `"scalar"` |
 | `default_max_residual` | `float` | `0.1` | Limit for joints not in any group |
 | `base_obs_input` | `int \| str` | `0` | Which ONNX input is the observation |
 | `base_action_output` | `int \| str` | `0` | Which ONNX output is the action |
+| `residual_type` | `str` | `"mlp"` | Network architecture: `"mlp"`, `"gru"`, or `"lstm"` |
+| `residual_gru_hidden_dim` | `int` | `256` | GRU hidden state size |
+| `residual_gru_num_layers` | `int` | `1` | Number of GRU layers |
+| `residual_lstm_hidden_dim` | `int` | `256` | LSTM hidden state size |
+| `residual_lstm_num_layers` | `int` | `1` | Number of LSTM layers |
 
 ### `JointGroupConfig`
 
@@ -483,7 +533,7 @@ outputs = base.forward_full(obs=obs, h_in=h, c_in=c)
 | `entropy` | Distribution entropy |
 | `action_mean` / `action_std` | Distribution statistics |
 | `trainable_parameters` | Parameters for the optimizer |
-| `reset(dones)` | Reset internal state (no-op for MLP) |
+| `reset(dones)` | Reset recurrent hidden state for done envs (no-op for MLP) |
 | `num_actor_obs` / `num_base_obs` / `num_actions` | Dimension properties |
 | `residual` / `critic` / `base` | Sub-module access |
 | `max_residual_limits` | Per-joint clamp limits tensor |
@@ -561,9 +611,10 @@ robo_residual/
 │   ├── __init__.py
 │   ├── core/
 │   │   ├── onnx_base.py              # Load ONNX, make batch dynamic, run inference
+│   │   ├── residual_nets.py          # MLPResidual, GRUResidual, LSTMResidual + ONNX wrappers
 │   │   ├── residual_actor_critic.py   # ONNX base + PyTorch residual + critic
 │   │   ├── composable.py             # Multi-phase residual stacking (training)
-│   │   └── fuse_onnx.py              # ONNX graph surgery: merge base + residual
+│   │   └── fuse_onnx.py              # ONNX graph surgery: merge base + residual (MLP/GRU/LSTM)
 │   ├── config/
 │   │   └── residual_config.py         # JointGroupConfig, ResidualConfig
 │   ├── adapters/
@@ -608,12 +659,65 @@ cd robo_residual
 pytest tests/ -v
 ```
 
-68 tests covering: ONNX loading, residual clamping, gradient flow, ONNX graph surgery fusion, config validation, multi-phase stacking, obs override, normalization, rsl_rl wrapper, obs adapter. All run on GPU when available.
+138 tests covering: ONNX loading, residual clamping, gradient flow, ONNX graph surgery fusion (MLP/GRU/LSTM), recurrent hidden state management, selective env reset, config validation, multi-phase stacking, obs override, normalization, rsl_rl wrapper, obs adapter, residual diagnostics, pre-built robot configs. All run on GPU when available.
+
+## Training Diagnostics
+
+Call `residual_stats()` after any `act()` or `act_inference()` to get per-joint diagnostics:
+
+```python
+actions = policy.act(obs)
+stats = policy.residual_stats()
+
+# Per-joint tensors (num_actions,):
+#   residual/mean_abs_delta   — mean |clamped delta| over the batch (radians)
+#   residual/saturation_rate  — fraction of samples where raw delta hit the clamp limit
+#
+# Scalars (float):
+#   residual/mean_abs_delta_scalar  — mean over all joints
+#   residual/max_saturation_rate    — max saturation across joints
+
+# Log to wandb:
+wandb.log({k: v for k, v in stats.items()})
+
+# Log to tensorboard (per-joint as histogram):
+for j, (d, s) in enumerate(zip(stats["residual/mean_abs_delta"], stats["residual/saturation_rate"])):
+    writer.add_scalar(f"residual/delta_joint_{j}", d.item(), iteration)
+    writer.add_scalar(f"residual/saturation_joint_{j}", s.item(), iteration)
+```
+
+**Interpreting saturation rate:**
+- Near 1.0 → clamp is too tight; residual wants to do more. Increase `max_residual` for that group.
+- Near 0.0 → residual isn't using the budget. The policy may have converged, or the group doesn't matter for this task.
+
+## Pre-built Robot Configs
+
+Quick-start configs for common robots:
+
+```python
+from robo_residual import g1_conservative, g1_energy_efficient
+from robo_residual import h1_conservative, h1_energy_efficient
+from robo_residual import go2_conservative, go2_energy_efficient
+
+# Conservative: safe starting point for any fine-tuning task
+config = g1_conservative()
+
+# Energy-efficient: validated on SONIC base (-20% energy, -47% tracking error)
+config = g1_energy_efficient()
+```
+
+Joint constants are also importable:
+
+```python
+from robo_residual.robots.g1 import LEG_INDICES, WAIST_INDICES, ARM_INDICES, JOINT_NAMES
+from robo_residual.robots.h1 import LEG_INDICES, ARM_INDICES
+from robo_residual.robots.go2 import HIP_INDICES, THIGH_INDICES, CALF_INDICES
+```
 
 ## Roadmap
 
 - [x] End-to-end example on [SONIC / GR00T-WBC](https://github.com/NVlabs/GR00T-WholeBodyControl) — −20% energy, −47–67% tracking error ([see example](examples/sonic_energy_efficient/README.md))
-- [ ] LSTM / recurrent residual MLP — for tasks requiring memory in the residual
+- [x] Training diagnostics — `residual_stats()` returns per-joint delta magnitude and clamp saturation rate
+- [x] Pre-built joint group configs for common robots (Unitree G1, H1, Go2)
+- [x] Recurrent residual networks — GRU and LSTM, with per-env hidden state reset and full ONNX fuse support (hidden state I/O pass-through)
 - [ ] Support PyTorch `.pt` checkpoints as base policy — fuse residual weights directly into the original model without ONNX conversion
-- [ ] Training visualization — log per-joint residual delta magnitude, clamp saturation rate (wandb / tensorboard)
-- [ ] Pre-built joint group configs for common robots (Unitree G1, H1, Go2, etc.)

@@ -40,6 +40,12 @@ class ResidualConfig:
     default_max_residual: float = 0.1
     base_obs_input: int | str = 0
     base_action_output: int | str = 0
+    # Residual network type: "mlp" (default), "lstm", or "gru"
+    residual_type: str = "mlp"
+    residual_lstm_hidden_dim: int = 256
+    residual_lstm_num_layers: int = 1
+    residual_gru_hidden_dim: int = 256
+    residual_gru_num_layers: int = 1
 
     def validate(self, num_actions: int) -> None:
         """Check config consistency. Raises ValueError on problems."""

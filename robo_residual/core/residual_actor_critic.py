@@ -1,17 +1,21 @@
-"""Residual Actor-Critic: ONNX base + PyTorch residual MLP + critic.
+"""Residual Actor-Critic: ONNX base + PyTorch residual network + critic.
 
 Architecture (same obs):
-    actor_obs → [ONNX Base Policy]  → base_action (frozen, no grad)
-    actor_obs → [Residual MLP]      → δ (trainable, zero-initialized)
+    actor_obs → [ONNX Base Policy]    → base_action (frozen, no grad)
+    actor_obs → [Residual Network]    → δ (trainable, zero-initialized)
     action_mean = base_action + clamp(δ, -limits, +limits)
 
 Architecture (different obs — residual sees more than base):
-    base_obs  → [ONNX Base Policy]  → base_action (frozen)
-    actor_obs → [Residual MLP]      → δ (trainable)
+    base_obs  → [ONNX Base Policy]    → base_action (frozen)
+    actor_obs → [Residual Network]    → δ (trainable)
     action_mean = base_action + clamp(δ, -limits, +limits)
 
-The ONNX base can be any exported policy (MLP, LSTM, etc.).
-Only the residual MLP and critic are trainable.
+The ONNX base can be any exported policy (MLP, LSTM, CNN, etc.).
+The residual network is selected via ``ResidualConfig.residual_type``:
+  - "mlp"  (default): stateless MLP — ``MLPResidual``
+  - "lstm": recurrent LSTM — ``LSTMResidual`` (hidden state managed per env)
+
+Only the residual network and critic are trainable.
 """
 
 from __future__ import annotations
@@ -24,36 +28,38 @@ from torch.distributions import Normal
 
 from robo_residual.config.residual_config import ResidualConfig
 from robo_residual.core.onnx_base import OnnxBasePolicy
+from robo_residual.core.residual_nets import GRUResidual, LSTMResidual, MLPResidual, _build_mlp_sequential as _build_mlp
 from robo_residual.utils.normalizer import EmpiricalNormalization
 from robo_residual.utils.zero_init import zero_init_output_layer
 
 
-def _build_mlp(
+def _build_residual(
+    config: ResidualConfig,
     input_dim: int,
     output_dim: int,
-    hidden_dims: list[int],
-    activation: str = "elu",
-) -> nn.Sequential:
-    """Build a simple MLP with given hidden dims and activation."""
-    activation_fn = {
-        "elu": nn.ELU,
-        "relu": nn.ReLU,
-        "tanh": nn.Tanh,
-        "selu": nn.SELU,
-        "leaky_relu": nn.LeakyReLU,
-        "gelu": nn.GELU,
-    }
-    if activation not in activation_fn:
-        raise ValueError(f"Unknown activation: {activation}. Choose from {list(activation_fn)}")
-
-    layers: list[nn.Module] = []
-    prev_dim = input_dim
-    for h_dim in hidden_dims:
-        layers.append(nn.Linear(prev_dim, h_dim))
-        layers.append(activation_fn[activation]())
-        prev_dim = h_dim
-    layers.append(nn.Linear(prev_dim, output_dim))
-    return nn.Sequential(*layers)
+) -> MLPResidual | LSTMResidual | GRUResidual:
+    if config.residual_type == "mlp":
+        return MLPResidual(
+            input_dim, output_dim,
+            config.residual_hidden_dims,
+            config.residual_activation,
+        )
+    if config.residual_type == "lstm":
+        return LSTMResidual(
+            input_dim, output_dim,
+            config.residual_lstm_hidden_dim,
+            config.residual_lstm_num_layers,
+        )
+    if config.residual_type == "gru":
+        return GRUResidual(
+            input_dim, output_dim,
+            config.residual_gru_hidden_dim,
+            config.residual_gru_num_layers,
+        )
+    raise ValueError(
+        f"Unknown residual_type: '{config.residual_type}'. "
+        "Choose 'mlp', 'lstm', or 'gru'."
+    )
 
 
 class ResidualActorCritic(nn.Module):
@@ -122,13 +128,10 @@ class ResidualActorCritic(nn.Module):
         limits = config.build_residual_limits(self._num_actions)
         self.register_buffer("max_residual_limits", limits)
 
-        # Residual MLP (trainable, zero-initialized output)
+        # Residual network (trainable, zero-initialized output)
         # Takes actor_obs (may be larger than base_obs)
-        self.residual = _build_mlp(
-            self._num_actor_obs,
-            self._num_actions,
-            config.residual_hidden_dims,
-            config.residual_activation,
+        self.residual: MLPResidual | LSTMResidual | GRUResidual = _build_residual(
+            config, self._num_actor_obs, self._num_actions,
         )
         zero_init_output_layer(self.residual)
 
@@ -206,8 +209,9 @@ class ResidualActorCritic(nn.Module):
         base_obs = self._get_base_obs(actor_obs)
         with torch.no_grad():
             base_action = self.base.forward(base_obs)
-        delta = self.residual(actor_obs)
-        delta = torch.clamp(delta, -self.max_residual_limits, self.max_residual_limits)
+        delta_raw = self.residual(actor_obs)
+        delta = torch.clamp(delta_raw, -self.max_residual_limits, self.max_residual_limits)
+        self._last_residual_delta_raw = delta_raw.detach()
         self._last_residual_delta = delta
         return base_action + delta
 
@@ -215,6 +219,33 @@ class ResidualActorCritic(nn.Module):
     def last_residual_delta(self) -> torch.Tensor | None:
         """Most recently computed residual delta (clamped). For reward shaping."""
         return getattr(self, "_last_residual_delta", None)
+
+    def residual_stats(self) -> dict[str, torch.Tensor | float]:
+        """Per-joint residual diagnostics for logging to wandb / tensorboard.
+
+        Call after ``act()`` or ``act_inference()``. Returns an empty dict if
+        no forward pass has been run yet.
+
+        Returns a dict with:
+        - ``residual/mean_abs_delta``: mean |clamped delta| per joint, shape (num_actions,)
+        - ``residual/saturation_rate``: fraction of samples where raw delta hit the clamp
+          limit, per joint, shape (num_actions,). Values near 1.0 → clamp too tight.
+        - ``residual/mean_abs_delta_scalar``: scalar mean across all joints
+        - ``residual/max_saturation_rate``: max saturation rate across joints (scalar)
+        """
+        delta = getattr(self, "_last_residual_delta", None)
+        delta_raw = getattr(self, "_last_residual_delta_raw", None)
+        if delta is None or delta_raw is None:
+            return {}
+
+        mean_abs = delta.detach().abs().mean(dim=0)
+        saturation = (delta_raw.abs() >= self.max_residual_limits).float().mean(dim=0)
+        return {
+            "residual/mean_abs_delta": mean_abs,
+            "residual/saturation_rate": saturation,
+            "residual/mean_abs_delta_scalar": mean_abs.mean().item(),
+            "residual/max_saturation_rate": saturation.max().item(),
+        }
 
     def _get_std(self) -> torch.Tensor:
         if self._noise_std_type == "log":
@@ -277,5 +308,13 @@ class ResidualActorCritic(nn.Module):
             self.critic_obs_normalizer.update(critic_obs)
 
     def reset(self, dones: torch.Tensor | None = None) -> None:
-        """Reset internal state (no-op for MLP residual)."""
-        pass
+        """Reset residual hidden state for done environments.
+
+        For ``MLPResidual`` this is a no-op (stateless). For ``LSTMResidual``
+        this zeros the hidden state of environments where ``dones`` is True.
+
+        Args:
+            dones: Bool/float tensor of shape ``(B,)`` or ``(B, 1)``.
+                   Pass ``None`` to reset all environments.
+        """
+        self.residual.reset(dones)

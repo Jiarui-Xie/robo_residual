@@ -20,7 +20,7 @@ from torch.distributions import Normal
 
 from robo_residual.config.residual_config import ResidualConfig
 from robo_residual.core.onnx_base import OnnxBasePolicy
-from robo_residual.core.residual_actor_critic import _build_mlp
+from robo_residual.core.residual_nets import _build_mlp_sequential as _build_mlp
 from robo_residual.utils.zero_init import zero_init_output_layer
 
 

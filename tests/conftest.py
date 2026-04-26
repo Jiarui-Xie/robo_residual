@@ -106,3 +106,25 @@ def small_config():
 @pytest.fixture
 def device():
     return DEVICE
+
+
+@pytest.fixture
+def lstm_config(simple_joint_groups):
+    return ResidualConfig(
+        joint_groups=simple_joint_groups,
+        residual_type="lstm",
+        residual_lstm_hidden_dim=32,
+        residual_lstm_num_layers=1,
+        init_noise_std=0.1,
+    )
+
+
+@pytest.fixture
+def gru_config(simple_joint_groups):
+    return ResidualConfig(
+        joint_groups=simple_joint_groups,
+        residual_type="gru",
+        residual_gru_hidden_dim=32,
+        residual_gru_num_layers=1,
+        init_noise_std=0.1,
+    )
