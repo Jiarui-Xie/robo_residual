@@ -10,8 +10,8 @@ Train a small residual MLP on top of NVIDIA's frozen [SONIC](https://github.com/
 
 | | cmd = 1.7 m/s | cmd = 3.0 m/s |
 |---|---|---|
-| Energy reduction | **−22.5%** (422 W → 327 W) | **−19.8%** (734 W → 588 W) |
-| Velocity tracking error | −67% | −47% |
+| Energy reduction | **−24.9%** (476 W → 357 W) | **−15.2%** (825 W → 699 W) |
+| Velocity tracking error | −67% | −42% |
 | Gait smoothness σ(vx) | −52% | −31% |
 
 At 3.0 m/s the residual finds a **Pareto improvement — faster AND more efficient**. The base policy had headroom it wasn't using.

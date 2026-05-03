@@ -43,7 +43,7 @@ from examples.sonic_energy_efficient.env.sonic_obs_builder import SonicObsBuilde
 from examples.sonic_energy_efficient.env.sonic_online_planner import SonicOnlinePlannerEncoder
 from robo_residual.core.onnx_base import OnnxBasePolicy
 
-MJ_XML       = "/home/lumi/GR00T-WholeBodyControl/gear_sonic/data/robot_model/model_data/g1/scene_43dof.xml"
+MJ_XML       = "/home/lumi/GR00T-WholeBodyControl/gear_sonic_deploy/g1/scene_29dof.xml"  # was scene_43dof.xml — patched 2026-05-04
 ENCODER_ONNX = "examples/sonic_energy_efficient/models/model_encoder_dyn.onnx"
 PLANNER_ONNX = "examples/sonic_energy_efficient/models/planner_sonic_dyn.onnx"
 BASELINE_DECODER = "examples/sonic_energy_efficient/models/model_decoder.onnx"
@@ -86,6 +86,9 @@ def quat_rotate_inv(q_wxyz, v):
 def build_mujoco_env():
     model = mujoco.MjModel.from_xml_path(MJ_XML)
     model.opt.timestep = MUJOCO_TIMESTEP
+    # ALIGN-6: override ground sliding friction to training value (deploy XML hardcodes 0.5)
+    from examples.sonic_energy_efficient.configs.sonic_params import MUJOCO_GROUND_FRICTION
+    model.geom_friction[:, 0] = MUJOCO_GROUND_FRICTION
     data = mujoco.MjData(model)
     qpos_idx, qvel_idx, ctrl_idx = [], [], []
     for jn in SONIC_GROUPED_JOINT_NAMES:
@@ -119,11 +122,19 @@ def get_state(data, idx):
     )
 
 
-def run_rollout_per_joint(decoder_onnx, cmd_vel, warmup_steps, record_steps, label):
-    """Run rollout and return per-joint mean |tau * qdot| array (29,)."""
+def run_rollout_per_joint(decoder_onnx, cmd_vel, warmup_steps, record_steps, label,
+                          mode="step_mean"):
+    """Run rollout and return per-joint mean |tau * qdot| array (29,).
+
+    mode:
+      "step_mean" (legacy)  -- mean_k(|mean_4(tau_k) * qd_end_k|)  (50Hz samples)
+      "integrate"           -- (1/T) * sum_substep |tau * qd| * dt_phys (200Hz)
+                               matches local record_energy.py time-integral
+    """
     model, data, idx = build_mujoco_env()
     _, qvel_idx, ctrl_idx = idx
     dt_ctrl = MUJOCO_TIMESTEP * MUJOCO_DECIMATION
+    dt_phys = MUJOCO_TIMESTEP
 
     token_provider = SonicOnlinePlannerEncoder(
         planner_onnx=PLANNER_ONNX,
@@ -147,26 +158,37 @@ def run_rollout_per_joint(decoder_onnx, cmd_vel, warmup_steps, record_steps, lab
     )
     obs = obs_builder.build(token)
 
-    per_joint_power = []  # list of (29,) arrays
+    per_joint_power = []  # list of (29,) arrays  (step_mean mode)
+    energy_acc = np.zeros(29)  # integrate mode: sum |tau*qd|*dt_phys
+    record_time = 0.0          # integrate mode: total recorded sim seconds
     pos_x_hist = []
     total_steps = warmup_steps + record_steps
+    prev_target_q = SONIC_DEFAULT_ANGLES.copy()  # 1-step action delay (matches GR00T DDS async + laptop deploy)
 
     for t in range(total_steps):
         with torch.no_grad():
             actions_native = decoder.forward(obs)
 
+
         a_grouped = actions_native[0].cpu().numpy()[ISAACLAB_TO_MUJOCO]
         target_q = SONIC_DEFAULT_ANGLES + a_grouped * SONIC_ACTION_SCALE
+        # Apply previous step's target_q (1-step delay), matches mujoco_energy_compare.py
+        apply_target_q = prev_target_q
+        prev_target_q = target_q.copy()
 
         tau_buf = []
         for _ in range(MUJOCO_DECIMATION):
             q  = data.qpos[idx[0]]
             qd = data.qvel[qvel_idx]
-            tau = SONIC_KP * (target_q - q) - SONIC_KD * qd
+            tau = SONIC_KP * (apply_target_q - q) - SONIC_KD * qd
             tau = np.clip(tau, -MJ_TORQUE_LIM, MJ_TORQUE_LIM)
             data.ctrl[ctrl_idx] = tau
             mujoco.mj_step(model, data)
             tau_buf.append(tau.copy())
+            if mode == "integrate" and t >= warmup_steps:
+                qd_post = data.qvel[qvel_idx].copy()
+                energy_acc += np.abs(tau * qd_post) * dt_phys
+                record_time += dt_phys
 
         jpos, jvel, ang_vel, grav, quat = get_state(data, idx)
         obs_builder.update(ang_vel=ang_vel, joint_pos=jpos, joint_vel=jvel,
@@ -174,7 +196,7 @@ def run_rollout_per_joint(decoder_onnx, cmd_vel, warmup_steps, record_steps, lab
         token_provider.step_frame()
         pos_x_hist.append(data.qpos[0])
 
-        if t >= warmup_steps:
+        if mode == "step_mean" and t >= warmup_steps:
             tau_mean = np.mean(tau_buf, axis=0)          # (29,) in SONIC grouped order
             qd_grouped = data.qvel[qvel_idx].copy()       # (29,) in SONIC grouped order
             joint_power = np.abs(tau_mean * qd_grouped)   # (29,) per-joint |tau*qdot|
@@ -195,10 +217,13 @@ def run_rollout_per_joint(decoder_onnx, cmd_vel, warmup_steps, record_steps, lab
             phase = "warmup" if t < warmup_steps else "record"
             print(f"  [{label}][{phase} t={t*dt_ctrl:5.1f}s] h={h:.3f}  vx={vx:+.3f}")
 
-    arr = np.array(per_joint_power)   # (record_steps, 29)
-    mean_power = arr.mean(axis=0)     # (29,)
+    if mode == "integrate":
+        mean_power = energy_acc / max(record_time, 1e-9)
+    else:
+        arr = np.array(per_joint_power)   # (record_steps, 29)
+        mean_power = arr.mean(axis=0)     # (29,)
     total_mean = mean_power.sum()
-    print(f"  [{label}] total_mean_power={total_mean:.1f}W")
+    print(f"  [{label}][mode={mode}] total_mean_power={total_mean:.1f}W")
     return mean_power
 
 
@@ -309,6 +334,9 @@ def parse_args():
     p.add_argument("--warmup-steps", type=int, default=150)
     p.add_argument("--record-steps", type=int, default=750)
     p.add_argument("--output-dir", default="runs/joint_power_analysis")
+    p.add_argument("--mode", choices=["step_mean", "integrate"], default="step_mean",
+                   help="step_mean (legacy 50Hz) | integrate (200Hz time integral, "
+                        "matches local record_energy.py)")
     return p.parse_args()
 
 
@@ -318,16 +346,19 @@ def main():
     print(f"  Per-Joint Power Analysis  cmd={args.cmd_vel}m/s")
     print(f"{'='*60}\n")
 
+    print(f"[mode={args.mode}]")
     print("[BASELINE]")
     baseline_power = run_rollout_per_joint(
         args.baseline_decoder, args.cmd_vel,
-        args.warmup_steps, args.record_steps, "BASELINE"
+        args.warmup_steps, args.record_steps, "BASELINE",
+        mode=args.mode,
     )
 
     print("\n[RESIDUAL]")
     residual_power = run_rollout_per_joint(
         args.fused_decoder, args.cmd_vel,
-        args.warmup_steps, args.record_steps, "RESIDUAL"
+        args.warmup_steps, args.record_steps, "RESIDUAL",
+        mode=args.mode,
     )
 
     print("\n[plotting]")

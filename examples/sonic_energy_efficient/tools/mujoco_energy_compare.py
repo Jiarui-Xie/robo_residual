@@ -196,6 +196,7 @@ def run_rollout(
             obs = obs_builder.build(token)
             actions_native = decoder.forward(obs)
 
+
             a_grouped = actions_native[0].cpu().numpy()[ISAACLAB_TO_MUJOCO]
             target_q = SONIC_DEFAULT_ANGLES + a_grouped * SONIC_ACTION_SCALE
 
@@ -224,8 +225,8 @@ def run_rollout(
             if t >= warmup_steps:
                 # Mean torque over substeps
                 tau_mean  = np.mean(tau_buf, axis=0)
-                qd_native = data.qvel[qvel_idx][MUJOCO_TO_ISAACLAB]
-                power     = float(np.sum(np.abs(tau_mean * qd_native)))
+                qd_grouped = data.qvel[qvel_idx]  # FIX: was permuted to native order, mismatching tau_mean (grouped order)
+                power     = float(np.sum(np.abs(tau_mean * qd_grouped)))
                 energy_log.append(power)
 
                 if len(pos_x_hist) >= 50:

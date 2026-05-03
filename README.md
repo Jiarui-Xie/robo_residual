@@ -17,8 +17,8 @@ The first end-to-end example trains on top of NVIDIA's [SONIC](https://github.co
 
 | | cmd = 1.7 m/s | cmd = 3.0 m/s |
 |---|---|---|
-| Energy reduction | **−22.5%** (422 W → 327 W) | **−19.8%** (734 W → 588 W) |
-| Velocity tracking error | −67% | −47% |
+| Energy reduction | **−24.9%** (476 W → 357 W) | **−15.2%** (825 W → 699 W) |
+| Velocity tracking error | −67% | −42% |
 
 https://github.com/user-attachments/assets/0fccf5af-3122-4a45-8f24-cdc7e1da9b36
 
@@ -702,7 +702,7 @@ from robo_residual import go2_conservative, go2_energy_efficient
 # Conservative: safe starting point for any fine-tuning task
 config = g1_conservative()
 
-# Energy-efficient: validated on SONIC base (-20% energy, -47% tracking error)
+# Energy-efficient: validated on SONIC base (−25% energy @ 1.7 m/s, −15% @ 3.0 m/s)
 config = g1_energy_efficient()
 ```
 

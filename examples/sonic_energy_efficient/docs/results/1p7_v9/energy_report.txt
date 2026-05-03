@@ -7,13 +7,13 @@ Duration: 15s per run (after 15s warmup)
 ┌─────────────────────┬─────────────┬─────────────┐
 │                     │  Baseline   │  Residual   │
 ├─────────────────────┼─────────────┼─────────────┤
-│ Mean power (W)      │      422.3  │      327.3  │
-│ Median power (W)    │      287.1  │      265.0  │
-│ Mean fwd vel (m/s)  │      2.317  │      1.900  │
-│ Cmd overshoot (m/s) │     +0.617  │     +0.200  │
-│ Mean height (m)     │      0.732  │      0.741  │
+│ Mean power (W)      │      475.7  │      357.2  │
+│ Median power (W)    │      502.9  │      375.6  │
+│ Mean fwd vel (m/s)  │      2.298  │      1.900  │
+│ Cmd overshoot (m/s) │     +0.598  │     +0.200  │
+│ Mean height (m)     │      0.733  │      0.742  │
 └─────────────────────┴─────────────┴─────────────┘
 
-Energy reduction : 22.5%
+Energy reduction : 24.9%
 Residual training: ~1000 iterations, ~1880 fps
 Residual params  : 1,351,227 (MLP)

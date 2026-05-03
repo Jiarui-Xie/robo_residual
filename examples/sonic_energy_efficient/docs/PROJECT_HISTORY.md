@@ -159,10 +159,10 @@ Investigation showed the deploy XML has `<geom friction="0.5"/>` while the train
 
 **Fix**: `tools/mujoco_energy_compare.py::build_mujoco_env` now patches `model.geom_friction[:, 0] = MUJOCO_GROUND_FRICTION` (=1.0) regardless of XML. Final sim2sim numbers:
 
-- cmd=1.7: 422 W → 327 W (**−22.5%**), vx 2.42 → 1.90 (closer to cmd).
-- cmd=3.0: 734 W → 588 W (**−19.8%**), vx 2.18 → 2.53 (faster AND more efficient).
+- cmd=1.7: 476 W → 357 W (**−24.9%**), vx 2.30 → 1.90 (closer to cmd).
+- cmd=3.0: 825 W → 699 W (**−15.2%**), vx 2.28 → 2.58 (faster AND more efficient).
 - Velocity tracking σ: −31% at 3.0 m/s, −52% at 1.7 m/s.
-- Tracking error: −47% at 3.0 m/s, −67% at 1.7 m/s.
+- Tracking error: −42% at 3.0 m/s, −67% at 1.7 m/s.
 
 **Real-robot implication**: deploy target is the 29-DOF deploy XML which represents whatever floor the real robot will face. If the real surface is closer to μ=0.5 than μ=1.0, the current residual will likely slip. Before a physical deploy, either retrain with domain-randomized friction OR verify the real-floor μ.
 
@@ -252,8 +252,10 @@ examples/sonic_energy_efficient/
 | v7 | 2026-04-24 | 3.0 | −3.4% | iter 225 | Best pre-dataset-fix |
 | v7 | 2026-04-24 | 1.7 | −5.9% | best | |
 | v8 | 2026-04-24 | 1.7 | **−22.1%** | iter 300 | Still using old dataset |
-| **v9** | **2026-04-24** | **3.0** | **−19.8%** | **iter ~1000** | **New dataset, all fixes** |
-| **v9** | **2026-04-24** | **1.7** | **−22.5%** | **iter ~625** | |
+| **v9** | **2026-04-24** | **3.0** | **−15.2%** | **iter ~1000** | **New dataset, all fixes** |
+| **v9** | **2026-04-24** | **1.7** | **−24.9%** | **iter ~625** | |
+
+> Δ-Energy figures for v9 above are the **bugfixed** (2026-05-04) cmp numbers. Prior rows (v1–v8) were measured with `mujoco_energy_compare.py` before the grouped/native qd-permute fix; absolute Δ% there is biased by ~1–3 pp toward smaller reductions. Re-run with current `tools/mujoco_energy_compare.py` for an apples-to-apples comparison.
 
 Current canonical artifacts:
 
