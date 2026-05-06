@@ -32,6 +32,16 @@ https://github.com/user-attachments/assets/a22c8d1f-821b-475e-8087-a4a155126c92
 
 ---
 
+## How it works
+
+1. **Freeze the base** — the base ONNX is loaded via `onnxruntime` and never modified. No gradients flow through it.
+2. **Zero-init residual** — the residual output layer starts at zero, so the first training step is identical to running the base policy alone.
+3. **Per-joint clamp limits** — each `JointGroupConfig` sets an independent max correction in radians. Leg joints get tight budgets to preserve gait; arms can have larger budgets. The residual cannot override critical behavior regardless of how it trains.
+4. **Train via PPO** — only the residual MLP (or GRU/LSTM) and a fresh critic are updated. The base is untouched.
+5. **Fuse for deployment** — `fuse_residual_to_onnx()` merges base + residual into a single ONNX using graph surgery. The output drops in anywhere you'd use the original base policy.
+
+---
+
 ## Install
 
 ```bash
